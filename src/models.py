@@ -151,11 +151,24 @@ class LiftSplatShoot(nn.Module):
         # toggle using QuickCumsum vs. autograd
         self.use_quickcumsum = True
     
-    def create_frustum(self):
+    def create_frustum(self):# 为每一张图片生成一个棱台状（frustum）的点云
         # make grid in image plane
+        # 数据增强后图片大小  ogfH:128  ogfW:352
         ogfH, ogfW = self.data_aug_conf['final_dim']  # 原始图片大小  ogfH:128  ogfW:352
+        # 下采样16倍后图像大小  fH: 128/16=8  fW: 352/16=22
         fH, fW = ogfH // self.downsample, ogfW // self.downsample  # 下采样16倍后图像大小  fH: 8  fW: 22
-        ds = torch.arange(*self.grid_conf['dbound'], dtype=torch.float).view(-1, 1, 1).expand(-1, fH, fW)  # 在深度方向上划分网格 ds: DxfHxfW(41x8x22)
+        '''
+        ds： 在深度方向上划分网格 
+        dbound: [4.0, 45.0, 1.0]  
+        arange后-> [4.0,5.0,6.0,...,44.0]
+        view后(相当于reshape操作)-> (41x1x1)    
+        expand后（扩展张量中某维数据的尺寸）->  ds: DxfHxfW(41x8x22)
+        这行代码使用 PyTorch 创建一个 3D 张量 ds，其维度为 (D, fH, fW)，其中 D 表示深度方向上的网格数量，fH 和 fW 分别表示图像的高度和宽度。具体而言，这行代码使用 torch.arange 函数生成一个从 self.grid_conf['dbound'] 中指定的起始点、终止点和步长构成的等差数列，并将其转换为浮点型。然后，使用 view 函数将该等差数列重塑为列向量形式，并在深度方向上进行复制以匹配图像的高度和宽度，最终得到一个 DxfHxfW 的 3D 张量 ds，表示在深度方向上划分的网格。
+        view为reshape操作，-1为自动计算，后两个为1，计算得到结果为41x1x1
+        再expand在后两个维度上复制扩展至fH,fW，即41x8x22
+        最后arrange将其填充为线性4.0, 5.0, 6.0 ... 44.0，代表深度距离编码
+        '''
+        ds = torch.arange(*self.grid_conf['dbound'], dtype=torch.float).view(-1, 1, 1).expand(-1, fH, fW)  # 在深度方向上划分网格 ds: DxfHxfW(41x8x22) 
         D, _, _ = ds.shape # D: 41 表示深度方向上网格的数量
         xs = torch.linspace(0, ogfW - 1, fW, dtype=torch.float).view(1, 1, fW).expand(D, fH, fW)  # 在0到351上划分22个格子 xs: DxfHxfW(41x8x22)
         ys = torch.linspace(0, ogfH - 1, fH, dtype=torch.float).view(1, fH, 1).expand(D, fH, fW)  # 在0到127上划分8个格子 ys: DxfHxfW(41x8x22)
@@ -171,7 +184,7 @@ class LiftSplatShoot(nn.Module):
         """
         B, N, _ = trans.shape  # B:4(batchsize)    N: 6(相机数目)
 
-        # undo post-transformation
+        # undo post-transformation 增广
         # B x N x D x H x W x 3
         # 抵消数据增强及预处理对像素的变化
         points = self.frustum - post_trans.view(B, N, 1, 1, 1, 3)
@@ -264,6 +277,18 @@ class LiftSplatShoot(nn.Module):
         # intrins: [4,6,3,3]
         # post_rots: [4,6,3,3]
         # post_trans: [4,6,3]
+                
+        #  x:[4,6,3,128,352] 输入图像
+        # rots：由相机坐标系->车身坐标系的旋转矩阵，rots = (bs, N, 3, 3)；
+        #
+        # trans：由相机坐标系->车身坐标系的平移矩阵，trans=(bs, N, 3)；
+        #
+        # intrinsic：相机内参，intrinsic = (bs, N, 3, 3)；
+        #
+        # post_rots：由图像增强引起的旋转矩阵，post_rots = (bs, N, 3, 3)；
+        #
+        # post_trans：由图像增强引起的平移矩阵，post_trans = (bs, N, 3)；
+
         x = self.get_voxels(x, rots, trans, intrins, post_rots, post_trans)  # 将图像转换到BEV下，x: B x C x 200 x 200 (4 x 64 x 200 x 200)
         x = self.bevencode(x)  # 用resnet18提取特征  x: 4 x 1 x 200 x 200
         return x
