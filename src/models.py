@@ -169,8 +169,22 @@ class LiftSplatShoot(nn.Module):
         最后arrange将其填充为线性4.0, 5.0, 6.0 ... 44.0，代表深度距离编码
         '''
         ds = torch.arange(*self.grid_conf['dbound'], dtype=torch.float).view(-1, 1, 1).expand(-1, fH, fW)  # 在深度方向上划分网格 ds: DxfHxfW(41x8x22) 
+        #  _ 作为占位符，表示在这里并不需要使用到这个变量，只是为了占位而已。
         D, _, _ = ds.shape # D: 41 表示深度方向上网格的数量
+        '''
+        xs: 在宽度方向上划分网格
+        linspace 后(在[0,ogfW)区间内，均匀划分fW份)-> [0,16,32..336]  大小=fW(22)   
+        view后-> 1x1xfW(1x1x22)
+        expand后-> xs: DxfHxfW(41x8x22)
+        '''
+        # ???需要debug实际跑一下
         xs = torch.linspace(0, ogfW - 1, fW, dtype=torch.float).view(1, 1, fW).expand(D, fH, fW)  # 在0到351上划分22个格子 xs: DxfHxfW(41x8x22)
+        '''
+        ys: 在高度方向上划分网格
+        linspace 后(在[0,ogfH)区间内，均匀划分fH份)-> [0,16,32..112]  大小=fH(8)
+        view 后-> 1xfHx1 (1x8x1)
+        expand 后-> ys: DxfHxfW (41x8x22)
+        '''
         ys = torch.linspace(0, ogfH - 1, fH, dtype=torch.float).view(1, fH, 1).expand(D, fH, fW)  # 在0到127上划分8个格子 ys: DxfHxfW(41x8x22)
 
         # D x H x W x 3
@@ -186,7 +200,7 @@ class LiftSplatShoot(nn.Module):
 
         # undo post-transformation 增广
         # B x N x D x H x W x 3
-        # 抵消数据增强及预处理对像素的变化
+        # 抵消数据增强及预处理对像素的变化(post_trans)
         points = self.frustum - post_trans.view(B, N, 1, 1, 1, 3)
         points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1))
 
