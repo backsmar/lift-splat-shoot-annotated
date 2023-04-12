@@ -3,6 +3,12 @@ Copyright (C) 2020 NVIDIA Corporation.  All rights reserved.
 Licensed under the NVIDIA Source Code License. See LICENSE at https://github.com/nv-tlabs/lift-splat-shoot.
 Authors: Jonah Philion and Sanja Fidler
 """
+'''更多的优化方向：
+进一步利用相机内参，提升模型性能： 【内参位置编码】
+量产车辆不同外参条件下模型性能的退化： 【外参扰动】
+单帧网络模型的性能瓶颈： 【引入时序信息】
+Voxel_pooling部署难： 【voxel_pooling替代方案】
+'''
 
 import torch
 from torch import nn
@@ -43,6 +49,7 @@ class CamEncode(nn.Module):  # 提取图像特征进行图像编码
         self.trunk = EfficientNet.from_pretrained("efficientnet-b0")  # 使用 efficientnet 提取特征
 
         self.up1 = Up(320+112, 512)  # 上采样模块，输入输出通道分别为320+112和512
+        # 从512维度conv到了D+C的维度!!
         self.depthnet = nn.Conv2d(512, self.D + self.C, kernel_size=1, padding=0)  # 1x1卷积，变换维度
 
     def get_depth_dist(self, x, eps=1e-20):  # 对深度维进行softmax，得到每个像素不同深度的概率
@@ -52,8 +59,9 @@ class CamEncode(nn.Module):  # 提取图像特征进行图像编码
         x = self.get_eff_depth(x)  # 使用efficientnet提取特征  x: 24 x 512 x 8 x 22
         # Depth
         x = self.depthnet(x)  # 1x1卷积变换维度  x: 24 x 105(C+D) x 8 x 22
-
+        # B x (D + C)
         depth = self.get_depth_dist(x[:, :self.D])  # 第二个维度的前D个作为深度维，进行softmax  depth: 24 x 41 x 8 x 22
+        # 骚操作，把D和C又从一个维度上拆成两个维度，前面为了加速计算
         new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)  # 将特征通道维和通道维利用广播机制相乘  new_x: 24 x 64 x 41 x 8 x 22
 
         return depth, new_x
@@ -92,6 +100,7 @@ class BevEncode(nn.Module):
         super(BevEncode, self).__init__()
 
         # 使用resnet的前3个stage作为backbone
+        # 大卷积把深度投放不准的信息抹回来
         trunk = resnet18(pretrained=False, zero_init_residual=True)
         self.conv1 = nn.Conv2d(inC, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
@@ -137,15 +146,15 @@ class LiftSplatShoot(nn.Module):
                                               self.grid_conf['ybound'],
                                               self.grid_conf['zbound'],
                                               )  # 划分网格
-        self.dx = nn.Parameter(dx, requires_grad=False)  # [0.5,0.5,20]
-        self.bx = nn.Parameter(bx, requires_grad=False)  # [-49.5,-49.5,0]
-        self.nx = nn.Parameter(nx, requires_grad=False)  # [200,200,1]
+        self.dx = nn.Parameter(dx, requires_grad=False)  # [0.5,0.5,20],xyz的分辨率
+        self.bx = nn.Parameter(bx, requires_grad=False)  # [-49.5,-49.5,0],xyz的起始值
+        self.nx = nn.Parameter(nx, requires_grad=False)  # [200,200,1],xyz的格子数量
 
         self.downsample = 16  # 下采样倍数
         self.camC = 64  # 图像特征维度
         self.frustum = self.create_frustum()  # frustum: DxfHxfWx3(41x8x22x3)
         self.D, _, _, _ = self.frustum.shape  # D: 41
-        self.camencode = CamEncode(self.D, self.camC, self.downsample)
+        self.camencode = CamEncode(self.D, self.camC, self.downsample)  # backbone
         self.bevencode = BevEncode(inC=self.camC, outC=outC)
 
         # toggle using QuickCumsum vs. autograd
@@ -181,13 +190,14 @@ class LiftSplatShoot(nn.Module):
         xs = torch.linspace(0, ogfW - 1, fW, dtype=torch.float).view(1, 1, fW).expand(D, fH, fW)  # 在0到351上划分22个格子 xs: DxfHxfW(41x8x22)
         '''
         ys: 在高度方向上划分网格
-        linspace 后(在[0,ogfH)区间内，均匀划分fH份)-> [0,16,32..112]  大小=fH(8)
+        linspace 后(在[0,ogfH)(0,128)区间内，均匀划分fH份)-> [0,16,32..112]  大小=fH(8)
         view 后-> 1xfHx1 (1x8x1)
         expand 后-> ys: DxfHxfW (41x8x22)
+        把下采样后尺度上，对应原图中y上坐标值放到网格值里
         '''
         ys = torch.linspace(0, ogfH - 1, fH, dtype=torch.float).view(1, fH, 1).expand(D, fH, fW)  # 在0到127上划分8个格子 ys: DxfHxfW(41x8x22)
 
-        # D x H x W x 3
+        # D x H x W x 3,最后一维跟原图做了映射 ???debug
         frustum = torch.stack((xs, ys, ds), -1)  # 堆积起来形成网格坐标, frustum[i,j,k,0]就是(i,j)位置，深度为k的像素的宽度方向上的栅格坐标   frustum: DxfHxfWx3
         return nn.Parameter(frustum, requires_grad=False)
 
@@ -200,15 +210,16 @@ class LiftSplatShoot(nn.Module):
 
         # undo post-transformation 增广
         # B x N x D x H x W x 3
-        # 抵消数据增强及预处理对像素的变化(post_trans)
+        # 抵消数据增强及预处理对像素的变化(post_trans / post_rots)旋转平移
         points = self.frustum - post_trans.view(B, N, 1, 1, 1, 3)
         points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1))
 
-        # cam_to_ego
+        # cam_to_ego [[u,v] * Zc, Zc]（相机内外参公式）,其中Zc=d
         points = torch.cat((points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
                             points[:, :, :, :, :, 2:3]
                             ), 5)  # 将像素坐标(u,v,d)变成齐次坐标(du,dv,d)
         # d[u,v,1]^T=intrins*rots^(-1)*([x,y,z]^T-trans)
+        # 此处的rots为相机到车身，所以不需要求逆
         combine = rots.matmul(torch.inverse(intrins))
         points = combine.view(B, N, 1, 1, 1, 3, 3).matmul(points).squeeze(-1)
         points += trans.view(B, N, 1, 1, 1, 3)  # 将像素坐标d[u,v,1]^T转换到车体坐标系下的[x,y,z]^T
@@ -228,6 +239,12 @@ class LiftSplatShoot(nn.Module):
         return x
 
     def voxel_pooling(self, geom_feats, x):
+        '''
+        在投射过程中会存在的3点问题：
+        1、当下为车身坐标系，我们希望得到bev图像feature坐标系;
+        2、存在一些范围外的点需要滤掉;
+        3、如何处理落在同一个bev各自内的点;
+        '''
         # geom_feats: B x N x D x H x W x 3 (4 x 6 x 41 x 8 x 22 x 3)
         # x: B x N x D x fH x fW x C(4 x 6 x 41 x 8 x 22 x 64)
 
@@ -237,8 +254,9 @@ class LiftSplatShoot(nn.Module):
         # flatten x
         x = x.reshape(Nprime, C)  # 将图像展平，一共有 B*N*D*H*W 个点
 
-        # flatten indices
-        geom_feats = ((geom_feats - (self.bx - self.dx/2.)) / self.dx).long()  # 将[-50,50] [-10 10]的范围平移到[0,100] [0,20]，计算栅格坐标并取整
+        # flatten indices  bx：三个方向上的起始值(x,y,d)，dx：三个方向上的分辨率(一格子多少米)。???debug
+        # geom_feats - (50 - 1/2)
+        geom_feats = ((geom_feats - (self.bx - self.dx/2.)) / self.dx).long()  # 将[-50,50] [-10 10]的范围平移到[0,100] [0,20]，计算栅格坐标并取整，把位置拉到正值范围
         geom_feats = geom_feats.view(Nprime, 3)  # 将像素映射关系同样展平  geom_feats: B*N*D*H*W x 3 (173184 x 3)
         batch_ix = torch.cat([torch.full([Nprime//B, 1], ix,
                              device=x.device, dtype=torch.long) for ix in range(B)])  # 每个点对应于哪个batch
@@ -246,6 +264,7 @@ class LiftSplatShoot(nn.Module):
 
         # filter out points that are outside box
         # 过滤掉在边界线之外的点 x:0~199  y: 0~199  z: 0
+        # 第一行：x >= 0 & x < 200，nx=(200,200,1)格子的尺寸,保留范围内，过滤掉范围外的点
         kept = (geom_feats[:, 0] >= 0) & (geom_feats[:, 0] < self.nx[0])\
             & (geom_feats[:, 1] >= 0) & (geom_feats[:, 1] < self.nx[1])\
             & (geom_feats[:, 2] >= 0) & (geom_feats[:, 2] < self.nx[2])
@@ -256,7 +275,7 @@ class LiftSplatShoot(nn.Module):
         ranks = geom_feats[:, 0] * (self.nx[1] * self.nx[2] * B)\
             + geom_feats[:, 1] * (self.nx[2] * B)\
             + geom_feats[:, 2] * B\
-            + geom_feats[:, 3]  # 给每一个点一个rank值，rank相等的点在同一个batch，并且在在同一个格子里面
+            + geom_feats[:, 3]  # 给每一个点一个rank值(index)，rank相等的点在同一个batch，并且在在同一个格子里面
         sorts = ranks.argsort()
         x, geom_feats, ranks = x[sorts], geom_feats[sorts], ranks[sorts]  # 按照rank排序，这样rank相近的点就在一起了
         # x: 168648 x 64  geom_feats: 168648 x 4  ranks: 168648
