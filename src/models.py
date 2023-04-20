@@ -43,6 +43,7 @@ class Up(nn.Module):
 class CamEncode(nn.Module):  # 提取图像特征进行图像编码
     def __init__(self, D, C, downsample):
         super(CamEncode, self).__init__()
+        # 在上述代码中，super()函数的第一个参数是CamEncode，表示要调用的父类是CamEncode的超类，即nn.Module。super()函数的第二个参数是self，表示当前对象，即CamEncode类的实例。然后，super().__init__()调用了nn.Module的构造函数，以便正确地初始化CamEncode类的超类部分。
         self.D = D  # 41
         self.C = C  # 64
 
@@ -59,7 +60,7 @@ class CamEncode(nn.Module):  # 提取图像特征进行图像编码
         x = self.get_eff_depth(x)  # 使用efficientnet提取特征  x: 24 x 512 x 8 x 22
         # Depth
         x = self.depthnet(x)  # 1x1卷积变换维度  x: 24 x 105(C+D) x 8 x 22
-        # B x (D + C)
+        # B x (D + C) 神奇的操作
         depth = self.get_depth_dist(x[:, :self.D])  # 第二个维度的前D个作为深度维，进行softmax  depth: 24 x 41 x 8 x 22
         # 骚操作，把D和C又从一个维度上拆成两个维度，前面为了加速计算
         new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)  # 将特征通道维和通道维利用广播机制相乘  new_x: 24 x 64 x 41 x 8 x 22
@@ -135,7 +136,6 @@ class BevEncode(nn.Module):
 
         return x
 
-
 class LiftSplatShoot(nn.Module):
     def __init__(self, grid_conf, data_aug_conf, outC):
         super(LiftSplatShoot, self).__init__()
@@ -155,7 +155,7 @@ class LiftSplatShoot(nn.Module):
         self.frustum = self.create_frustum()  # frustum: DxfHxfWx3(41x8x22x3)
         self.D, _, _, _ = self.frustum.shape  # D: 41
         self.camencode = CamEncode(self.D, self.camC, self.downsample)  # backbone
-        self.bevencode = BevEncode(inC=self.camC, outC=outC)
+        self.bevencode = BevEncode(inC=self.camC, outC=outC)  # bev下的特征提取
 
         # toggle using QuickCumsum vs. autograd
         self.use_quickcumsum = True
@@ -265,6 +265,7 @@ class LiftSplatShoot(nn.Module):
         # filter out points that are outside box
         # 过滤掉在边界线之外的点 x:0~199  y: 0~199  z: 0
         # 第一行：x >= 0 & x < 200，nx=(200,200,1)格子的尺寸,保留范围内，过滤掉范围外的点
+        # y >= 0 & y < 200; z >=0 & z < 1;
         kept = (geom_feats[:, 0] >= 0) & (geom_feats[:, 0] < self.nx[0])\
             & (geom_feats[:, 1] >= 0) & (geom_feats[:, 1] < self.nx[1])\
             & (geom_feats[:, 2] >= 0) & (geom_feats[:, 2] < self.nx[2])
@@ -272,11 +273,12 @@ class LiftSplatShoot(nn.Module):
         geom_feats = geom_feats[kept]
 
         # get tensors from the same voxel next to each other
+        #   [:,0]格子的值，200 200 1的空间下 * 200 * 1 * B
         ranks = geom_feats[:, 0] * (self.nx[1] * self.nx[2] * B)\
             + geom_feats[:, 1] * (self.nx[2] * B)\
             + geom_feats[:, 2] * B\
             + geom_feats[:, 3]  # 给每一个点一个rank值(index)，rank相等的点在同一个batch，并且在在同一个格子里面
-        sorts = ranks.argsort()
+        sorts = ranks.argsort()  # 按照rank排序，这样rank相近的点就在一起了
         x, geom_feats, ranks = x[sorts], geom_feats[sorts], ranks[sorts]  # 按照rank排序，这样rank相近的点就在一起了
         # x: 168648 x 64  geom_feats: 168648 x 4  ranks: 168648
 
@@ -287,7 +289,7 @@ class LiftSplatShoot(nn.Module):
             x, geom_feats = QuickCumsum.apply(x, geom_feats, ranks)  # 一个batch的一个格子里只留一个点 x: 29072 x 64  geom_feats: 29072 x 4
 
         # griddify (B x C x Z x X x Y)
-        final = torch.zeros((B, C, self.nx[2], self.nx[0], self.nx[1]), device=x.device)  # final: 4 x 64 x 1 x 200 x 200
+        final = torch.zeros((B, C, self.nx[2], self.nx[0], self.nx[1]), device=x.device)  # final: 4 x 64 x 1 x 200 x 200, 世界坐标系
         final[geom_feats[:, 3], :, geom_feats[:, 2], geom_feats[:, 0], geom_feats[:, 1]] = x  # 将x按照栅格坐标放到final中
 
         # collapse Z
