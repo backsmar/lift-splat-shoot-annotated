@@ -176,7 +176,7 @@ normalize_img = torchvision.transforms.Compose((
 def gen_dx_bx(xbound, ybound, zbound):  # 划分网格
     dx = torch.Tensor([row[2] for row in [xbound, ybound, zbound]])  # dx=[0.5,0.5,20] 分别为x, y, z三个方向上的网格间距
     bx = torch.Tensor([row[0] + row[2]/2.0 for row in [xbound, ybound, zbound]])  # bx=[-49.75,-49.75,0]  分别为x, y, z三个方向上第一个格子的坐标
-    nx = torch.LongTensor([(row[1] - row[0]) / row[2] for row in [xbound, ybound, zbound]])  # nx=[200,200,1]  分别为x, y, z三个方向上格子的数量
+    nx = torch.LongTensor([int((row[1] - row[0]) / row[2]) for row in [xbound, ybound, zbound]])  # nx=[200,200,1]  分别为x, y, z三个方向上格子的数量
 
     return dx, bx, nx
 

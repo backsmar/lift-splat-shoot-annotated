@@ -16,7 +16,7 @@ from .tools import SimpleLoss, get_batch_iou, get_val_info
 
 
 def train(version,  # 数据集的版本
-          dataroot='/data/nuscenes',  # 数据集路径
+          dataroot='data/nuscenes',  # 数据集路径
           nepochs=10000,  # 训练最大的epoch数
           gpuid=1,  # gpu的序号
 
@@ -24,7 +24,7 @@ def train(version,  # 数据集的版本
           resize_lim=(0.193, 0.225),  # resize的范围
           final_dim=(128, 352),  # 数据预处理之后最终的图片大小
           bot_pct_lim=(0.0, 0.22),  # 裁剪图片时，图像底部裁剪掉部分所占比例范围
-          rot_lim=(-5.4, 5.4),  # 训练时旋转图片的角度范围
+             rot_lim=(-5.4, 5.4),  # 训练时旋转图片的角度范围
           rand_flip=True,  # # 是否随机翻转
           ncams=5, # 训练时选择的相机通道数
           max_grad_norm=5.0,
@@ -36,7 +36,7 @@ def train(version,  # 数据集的版本
           zbound=[-10.0, 10.0, 20.0],  # 限制z方向的范围并划分网格
           dbound=[4.0, 45.0, 1.0],  # 限制深度方向的范围并划分网格
 
-          bsz=4,  # batchsize
+          bsz=2,  # batchsize
           nworkers=10,  # 线程数
           lr=1e-3,  # 学习率
           weight_decay=1e-7,  # 权重衰减系数
@@ -62,14 +62,15 @@ def train(version,  # 数据集的版本
                                           grid_conf=grid_conf, bsz=bsz, nworkers=nworkers,
                                           parser_name='segmentationdata')  # 获取训练数据和测试数据
 
-    device = torch.device('cpu') if gpuid < 0 else torch.device(f'cuda:{gpuid}')
+    device = torch.device('cpu') if gpuid < 1 else torch.device(f'cuda:{gpuid}')
 
     model = compile_model(grid_conf, data_aug_conf, outC=1)  # 获取模型
     model.to(device)
 
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)  # 使用Adam优化器
 
-    loss_fn = SimpleLoss(pos_weight).cuda(gpuid)  # 损失函数
+    # loss_fn = SimpleLoss(pos_weight).cuda(gpuid)  # 损失函数
+    loss_fn = SimpleLoss(pos_weight)  # 损失函数
 
     writer = SummaryWriter(logdir=logdir)  # 用于记录训练过程
     val_step = 1000 if version == 'mini' else 10000  # 每隔多少个iter验证一次

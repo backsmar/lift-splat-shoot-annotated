@@ -54,7 +54,7 @@ class CamEncode(nn.Module):  # 提取图像特征进行图像编码
         self.depthnet = nn.Conv2d(512, self.D + self.C, kernel_size=1, padding=0)  # 1x1卷积，变换维度
 
     def get_depth_dist(self, x, eps=1e-20):  # 对深度维进行softmax，得到每个像素不同深度的概率
-        return x.softmax(dim=1)
+        return x.softmax(dim=1)  # 对第二个维度做softmax
 
     def get_depth_feat(self, x):
         x = self.get_eff_depth(x)  # 使用efficientnet提取特征  x: 24 x 512 x 8 x 22
@@ -177,6 +177,9 @@ class LiftSplatShoot(nn.Module):
         再expand在后两个维度上复制扩展至fH,fW，即41x8x22
         最后arrange将其填充为线性4.0, 5.0, 6.0 ... 44.0，代表深度距离编码
         '''
+        ds1 = torch.arange(*self.grid_conf['dbound'], dtype=torch.float) 
+        ds2 = ds1.view(-1, 1, 1)
+        ds3 = ds2.expand(-1, fH, fW)  # 在深度方向上划分网格 ds: DxfHxfW(41x8x22) 
         ds = torch.arange(*self.grid_conf['dbound'], dtype=torch.float).view(-1, 1, 1).expand(-1, fH, fW)  # 在深度方向上划分网格 ds: DxfHxfW(41x8x22) 
         #  _ 作为占位符，表示在这里并不需要使用到这个变量，只是为了占位而已。
         D, _, _ = ds.shape # D: 41 表示深度方向上网格的数量
@@ -187,6 +190,9 @@ class LiftSplatShoot(nn.Module):
         expand后-> xs: DxfHxfW(41x8x22)
         '''
         # ???需要debug实际跑一下
+        xs1 = torch.linspace(0, ogfW - 1, fW, dtype=torch.float)
+        xs2 = xs1.view(1, 1, fW)
+        xs3 = xs2.expand(D, fH, fW)  # 在0到351上划分22个格子 xs: DxfHxfW(41x8x22)
         xs = torch.linspace(0, ogfW - 1, fW, dtype=torch.float).view(1, 1, fW).expand(D, fH, fW)  # 在0到351上划分22个格子 xs: DxfHxfW(41x8x22)
         '''
         ys: 在高度方向上划分网格
@@ -229,7 +235,7 @@ class LiftSplatShoot(nn.Module):
     def get_cam_feats(self, x):
         """Return B x N x D x H/downsample x W/downsample x C
         """
-        B, N, C, imH, imW = x.shape  # B: 4  N: 6  C: 3  imH: 128  imW: 352
+        B, N, C, imH, imW = x.shape  # B: 4  N: 5  C: 3  imH: 128  imW: 352
 
         x = x.view(B*N, C, imH, imW)  # B和N两个维度合起来  x: 24 x 3 x 128 x 352
         x = self.camencode(x) # 进行图像编码  x: B*N x C x D x fH x fW(24 x 64 x 41 x 8 x 22)

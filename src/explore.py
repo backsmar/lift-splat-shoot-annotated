@@ -20,7 +20,7 @@ from .models import compile_model
 
 
 def lidar_check(version,
-                dataroot='/data/nuscenes',
+                dataroot='data/nuscenes',
                 show_lidar=True,
                 viz_train=False,
                 nepochs=1,
@@ -119,7 +119,7 @@ def lidar_check(version,
 
 
 def cumsum_check(version,
-                 dataroot='/data/nuscenes',
+                 dataroot='data/nuscenes',
                  gpuid=1,
 
                  H=900, W=1600,
@@ -194,7 +194,7 @@ def cumsum_check(version,
 
 def eval_model_iou(version,  # 数据集的版本
                    modelf,  # 模型文件路径
-                   dataroot='/data/nuscenes',  # 数据集路径
+                   dataroot='data/nuscenes',  # 数据集路径
                    gpuid=1,  # gpu的序号
 
                    H=900, W=1600,  # 图片大小
@@ -249,8 +249,8 @@ def eval_model_iou(version,  # 数据集的版本
 
 def viz_model_preds(version,
                     modelf,
-                    dataroot='/data/nuscenes',
-                    map_folder='/data/nuscenes/mini',
+                    dataroot='data/nuscenes',
+                    map_folder='data/nuscenes/mini',
                     gpuid=1,
                     viz_train=False,
 

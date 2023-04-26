@@ -16,7 +16,7 @@ from nuscenes.utils.data_classes import Box
 from glob import glob
 import torch.utils.data
 
-from .tools import get_lidar_data, img_transform, normalize_img, gen_dx_bx
+from.tools import get_lidar_data, img_transform, normalize_img, gen_dx_bx
 
 
 class NuscData(torch.utils.data.Dataset):
@@ -267,6 +267,25 @@ def compile_data(version, dataroot, data_aug_conf, grid_conf, bsz,
         'vizdata': VizData,
         'segmentationdata': SegmentationData,
     }[parser_name]  # 根据传入的参数选择数据解析器
+
+
+    # lgx test
+    print(nusc.list_scenes())
+    print('=====================')
+    my_scene = nusc.scene[0]
+    my_scene  # 可以使用下列命令来查看某个场景中的信息：
+    first_sample_token = my_scene['first_sample_token']  #获取第一个sample的token值
+    first_sample_token 
+    my_sample = nusc.get('sample', first_sample_token)
+    my_sample  # 输出结果 ：结果中包含了传感器采集到的信息、标注信息等等。
+    # 我们可以使用下列命令来将这些传感器中采集的进行可视化：
+    sensor_radar = 'RADAR_FRONT'  #这里选择的传感器为前方的毫米波雷达传感器
+    radar_front_data = nusc.get('sample_data',my_sample['data'][sensor_radar])  
+    radar_front_data
+    print(nusc.list_categories())
+    nusc.render_sample_data(radar_front_data['token'])
+
+
     traindata = parser(nusc, is_train=True, data_aug_conf=data_aug_conf,
                        grid_conf=grid_conf)
     valdata = parser(nusc, is_train=False, data_aug_conf=data_aug_conf,
@@ -280,5 +299,6 @@ def compile_data(version, dataroot, data_aug_conf, grid_conf, bsz,
     valloader = torch.utils.data.DataLoader(valdata, batch_size=bsz,
                                             shuffle=False,
                                             num_workers=nworkers)
+
 
     return trainloader, valloader
