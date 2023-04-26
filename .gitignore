@@ -5,6 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
+*.pcd
 
 # Distribution / packaging
 .Python
@@ -141,3 +142,6 @@ hub/
 src/_pycache_/
 src/a.py
 src/b.py
+
+# ignore data folder
+data/
